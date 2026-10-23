@@ -7,6 +7,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastmcp import FastMCP
 from loguru import logger
 
+try:
+    from fastmcp.server.auth.providers.auth0 import Auth0Provider
+except ImportError:  # Keep local stdio mode usable with older FastMCP installs.
+    Auth0Provider = None
+
 # Import database functions
 from .database import (
     close_database_pool,
@@ -97,8 +102,34 @@ def resolve_namespace_database(
 
     return final_namespace, final_database
 
-# Initialize MCP server
-mcp = FastMCP("SurrealDB MCP Server")
+# Configure Auth0 OAuth for remote HTTP deployments. Local stdio mode remains available
+# without OAuth configuration, but remote HTTP mode refuses to start unless OAuth is set.
+def build_auth_provider():
+    required = {
+        "AUTH0_CONFIG_URL": os.environ.get("AUTH0_CONFIG_URL"),
+        "AUTH0_CLIENT_ID": os.environ.get("AUTH0_CLIENT_ID"),
+        "AUTH0_CLIENT_SECRET": os.environ.get("AUTH0_CLIENT_SECRET"),
+        "AUTH0_AUDIENCE": os.environ.get("AUTH0_AUDIENCE"),
+        "MCP_BASE_URL": os.environ.get("MCP_BASE_URL"),
+    }
+    if not all(required.values()):
+        return None
+    if Auth0Provider is None:
+        raise RuntimeError(
+            "Auth0 OAuth requires a FastMCP version that provides Auth0Provider. "
+            "Upgrade FastMCP before using HTTP mode."
+        )
+    return Auth0Provider(
+        config_url=required["AUTH0_CONFIG_URL"],
+        client_id=required["AUTH0_CLIENT_ID"],
+        client_secret=required["AUTH0_CLIENT_SECRET"],
+        audience=required["AUTH0_AUDIENCE"],
+        base_url=required["MCP_BASE_URL"],
+    )
+
+
+_auth_provider = build_auth_provider()
+mcp = FastMCP("ClearFlow SurrealDB MCP", auth=_auth_provider)
 
 
 @mcp.tool()
@@ -625,8 +656,22 @@ def main():
     logger.info(f"Database: {os.environ.get('SURREAL_URL')} (NS: {os.environ.get('SURREAL_NAMESPACE')}, DB: {os.environ.get('SURREAL_DATABASE')})")
     
     try:
-        # Run with STDIO transport for MCP compatibility
-        mcp.run()
+        transport = os.environ.get("MCP_TRANSPORT", "stdio").strip().lower()
+        if transport == "http":
+            if _auth_provider is None:
+                raise RuntimeError(
+                    "Refusing to start remote HTTP MCP without Auth0 OAuth. Set "
+                    "AUTH0_CONFIG_URL, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, "
+                    "AUTH0_AUDIENCE, and MCP_BASE_URL."
+                )
+            host = os.environ.get("MCP_HOST", "0.0.0.0")
+            port = int(os.environ.get("MCP_PORT", "8000"))
+            logger.info("Starting authenticated HTTP MCP transport on %s:%s", host, port)
+            mcp.run(transport="http", host=host, port=port, path="/mcp")
+        elif transport == "stdio":
+            mcp.run()
+        else:
+            raise ValueError("MCP_TRANSPORT must be 'stdio' or 'http'")
     except KeyboardInterrupt:
         logger.info("Server shutdown requested")
     except Exception as e:
