@@ -13,7 +13,7 @@ authors = [
     { name = "Luis Novo", email = "lfnovo@gmail.com" }
 ]
 dependencies = [
-    "fastmcp>=2.11.0",
+    "fastmcp>=2.14.2",
     "surrealdb>=1.0.6",
     "loguru>=0.7.0",
 ]
